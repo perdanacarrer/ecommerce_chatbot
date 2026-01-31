@@ -56,12 +56,22 @@ The system is built with a FastAPI backend, a chat-style frontend, and real prod
 export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
 export GOOGLE_CLOUD_PROJECT=your-project-id
 
+Ensure GOOGLE_APPLICATION_CREDENTIALS is set to a GCP service account key.
+
+For local dev, this is enough:
+• brew install --cask google-cloud-sdk 
+• gcloud version 
+• gcloud init
+• gcloud auth application-default login
+• gcloud services enable bigquery.googleapis.com
+• gcloud iam service-accounts create chatbot-sa \ --display-name "Chatbot Service Account"
+• gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:chatbot-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/bigquery.user"
+
 ## Run locally
 ```bash
 docker-compose up --build
-```
-
-Ensure GOOGLE_APPLICATION_CREDENTIALS is set to a GCP service account key.
 
 Access
 
