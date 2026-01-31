@@ -70,7 +70,6 @@ For local dev, this is enough:
   --role="roles/bigquery.user"
 
 ## Run locally
-```bash
 docker-compose up --build
 
 Access
