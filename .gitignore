@@ -1,0 +1,43 @@
+# =========================
+# OS files
+# =========================
+.DS_Store
+__MACOSX/
+
+# =========================
+# Node.js (Frontend)
+# =========================
+chatbot/frontend/node_modules/
+chatbot/frontend/.npm/
+chatbot/frontend/.cache/
+chatbot/frontend/dist/
+chatbot/frontend/build/
+chatbot/frontend/.env
+chatbot/frontend/.env.local
+chatbot/frontend/.env.development
+chatbot/frontend/.env.production
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# =========================
+# Python (Backend)
+# =========================
+chatbot/backend/venv/
+chatbot/backend/.venv/
+chatbot/backend/__pycache__/
+chatbot/backend/*.pyc
+chatbot/backend/*.pyo
+chatbot/backend/*.pyd
+
+# Pytest
+chatbot/backend/.pytest_cache/
+
+# =========================
+# General
+# =========================
+.env
+.env.*
+*.log
