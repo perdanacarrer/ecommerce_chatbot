@@ -159,6 +159,7 @@ function renderComparison(products) {
     card.innerHTML = `
       <h4>${p.name}</h4>
       <p>Brand: ${p.brand}</p>
+      <p>Store: ${p.distribution_name}</p>
       <p>Price: $${p.retail_price}</p>
     `;
     table.appendChild(card);

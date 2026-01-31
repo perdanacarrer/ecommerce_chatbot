@@ -158,10 +158,11 @@ def chat(message: str):
             }
 
         query = """
-        SELECT name, category, brand, retail_price
-        FROM `bigquery-public-data.thelook_ecommerce.products`
-        WHERE LOWER(name) LIKE @p1
-           OR LOWER(name) LIKE @p2
+        SELECT p.name, p.category, p.brand, p.retail_price, dc.name AS distribution_name FROM `bigquery-public-data.thelook_ecommerce.products` p
+        LEFT JOIN `bigquery-public-data.thelook_ecommerce.distribution_centers` dc
+        ON p.distribution_center_id = dc.id
+        WHERE LOWER(p.name) LIKE @p1
+        OR LOWER(p.name) LIKE @p2
         """
 
         job_config = bigquery.QueryJobConfig(
@@ -186,8 +187,9 @@ def chat(message: str):
 
     # 🧱 Build dynamic SQL
     query = """
-    SELECT name, category, brand, retail_price
-    FROM `bigquery-public-data.thelook_ecommerce.products`
+    SELECT p.name, p.category, p.brand, p.retail_price, dc.name AS distribution_name FROM `bigquery-public-data.thelook_ecommerce.products` p
+    LEFT JOIN `bigquery-public-data.thelook_ecommerce.distribution_centers` dc
+    ON p.distribution_center_id = dc.id
     WHERE 1=1
     """
     params = []
@@ -195,19 +197,19 @@ def chat(message: str):
     # 💰 Price logic
     if price is not None:
         if price_op == "under":
-            query += " AND retail_price <= @price"
+            query += " AND p.retail_price <= @price"
             params.append(
                 bigquery.ScalarQueryParameter("price", "FLOAT64", price)
             )
 
         elif price_op == "over":
-            query += " AND retail_price >= @price"
+            query += " AND p.retail_price >= @price"
             params.append(
                 bigquery.ScalarQueryParameter("price", "FLOAT64", price)
             )
 
         elif price_op == "exact":
-            query += " AND retail_price BETWEEN @low AND @high"
+            query += " AND p.retail_price BETWEEN @low AND @high"
             params.extend([
                 bigquery.ScalarQueryParameter("low", "FLOAT64", price - 0.01),
                 bigquery.ScalarQueryParameter("high", "FLOAT64", price + 0.01),
@@ -215,21 +217,21 @@ def chat(message: str):
 
     # 👕 Department
     if department:
-        query += " AND department = @dept"
+        query += " AND p.department = @dept"
         params.append(
             bigquery.ScalarQueryParameter("dept", "STRING", department)
         )
 
     # 📏 Size (from name)
     if size:
-        query += " AND LOWER(name) LIKE @size"
+        query += " AND LOWER(p.name) LIKE @size"
         params.append(
             bigquery.ScalarQueryParameter("size", "STRING", f"%{size}%")
         )
 
     # 🧥 Category
     if category:
-        query += " AND LOWER(name) LIKE @category"
+        query += " AND LOWER(p.name) LIKE @category"
         params.append(
             bigquery.ScalarQueryParameter("category", "STRING", f"%{category}%")
         )
