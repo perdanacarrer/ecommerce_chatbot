@@ -1,4 +1,5 @@
-from fastapi import FastAPI
+from datetime import datetime
+from fastapi import FastAPI, Request, Body, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from google.cloud import bigquery
 import os
@@ -9,7 +10,7 @@ app = FastAPI()
 # ✅ CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -37,6 +38,20 @@ def detect_intent(message: str):
         return "size_search"
 
     return "search"
+
+def is_show_cart_intent(message: str) -> bool:
+    msg = message.lower()
+    keywords = [
+        "show cart",
+        "see cart",
+        "view cart",
+        "my cart",
+        "items in cart",
+        "show me cart",
+        "show me items",
+        "let me see my cart",
+    ]
+    return any(k in msg for k in keywords)
 
 # -------------------------
 # HELPERS
@@ -131,12 +146,71 @@ def detect_category_keyword(message: str):
             return k
     return None
 
+def get_user(user_id: int) -> dict | None:
+    query = """
+    SELECT
+      id,
+      first_name,
+      last_name,
+      email,
+      age,
+      gender,
+      state,
+      street_address,
+      postal_code,
+      city,
+      country,
+      latitude,
+      longitude,
+      traffic_source,
+      created_at,
+      user_geom
+    FROM `bigquery-public-data.thelook_ecommerce.users`
+    WHERE id = @user_id
+    LIMIT 1
+    """
+
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("user_id", "INT64", user_id)
+        ]
+    )
+
+    results = client.query(query, job_config=job_config).result()
+    rows = list(results)
+
+    if not rows:
+        return None
+
+    return dict(rows[0])
+
+USER_ID_ENV = os.getenv("USER_ID")
+
+if not USER_ID_ENV:
+    raise RuntimeError(
+        "USER_ID environment variable is not set. "
+        "Please define USER_ID in your environment or .env file."
+    )
+
+USER_ID = int(USER_ID_ENV)
+USER = get_user(USER_ID)
+
+if not USER:
+    raise RuntimeError(f"User {USER_ID} not found in database")
+
 # -------------------------
 # CHAT ENDPOINT
 # -------------------------
 @app.get("/chat")
 def chat(message: str):
     msg = message.lower()
+
+    # 🛒 SHOW CART
+    if is_show_cart_intent(message):
+        return {
+            "reply": "Here’s what’s currently in your cart 👇",
+            "action": "show_cart"
+        }
 
     # 🔍 Extract filters FIRST
     price, price_op = extract_price_constraint(message)
@@ -158,7 +232,8 @@ def chat(message: str):
             }
 
         query = """
-        SELECT p.name, p.category, p.brand, p.retail_price, dc.name AS distribution_name FROM `bigquery-public-data.thelook_ecommerce.products` p
+        SELECT p.id, p.name, p.category, p.brand, p.department, p.retail_price, p.sku, p.distribution_center_id, dc.name AS distribution_name
+        FROM `bigquery-public-data.thelook_ecommerce.products` p
         LEFT JOIN `bigquery-public-data.thelook_ecommerce.distribution_centers` dc
         ON p.distribution_center_id = dc.id
         WHERE LOWER(p.name) LIKE @p1
@@ -187,7 +262,8 @@ def chat(message: str):
 
     # 🧱 Build dynamic SQL
     query = """
-    SELECT p.name, p.category, p.brand, p.retail_price, dc.name AS distribution_name FROM `bigquery-public-data.thelook_ecommerce.products` p
+    SELECT p.id, p.name, p.category, p.brand, p.department, p.retail_price, p.sku, p.distribution_center_id, dc.name AS distribution_name
+    FROM `bigquery-public-data.thelook_ecommerce.products` p
     LEFT JOIN `bigquery-public-data.thelook_ecommerce.distribution_centers` dc
     ON p.distribution_center_id = dc.id
     WHERE 1=1
@@ -303,6 +379,140 @@ def chat(message: str):
         "reply": reply,
         "products": products
     }
+
+@app.post("/cart")
+def show_cart(cart: list = Body(...)):
+    if not cart:
+        return {
+            "reply": "🛒 Your cart is empty.",
+            "cart": []
+        }
+
+    return {
+        "reply": f"🛒 You have {len(cart)} item(s) in your cart:",
+        "cart": cart
+    }
+
+@app.post("/checkout")
+async def checkout(request: Request):
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    cart = data.get("cart")
+
+    if not isinstance(cart, list) or len(cart) == 0:
+        raise HTTPException(status_code=400, detail="Cart is empty")
+
+    fake_order_id = int(datetime.utcnow().timestamp())
+
+    return {
+        "order_id": fake_order_id,
+        "message": "✅ Order placed successfully (demo mode)"
+    }
+
+##Enable Billing in gcloud to make real checkout work
+# @app.post("/checkout")
+# async def checkout(request: Request):
+#     data = await request.json()
+#     cart = data["cart"]
+
+#     num_of_item = len(cart)
+
+#     # 1️⃣ Insert order
+#     order_query = """
+#     INSERT INTO `bigquery-public-data.thelook_ecommerce.orders`
+#       (user_id, status, gender, created_at, num_of_item)
+#     VALUES
+#       (@user_id, 'Processing', @gender, CURRENT_TIMESTAMP(), @num)
+#     """
+
+#     job_config = bigquery.QueryJobConfig(
+#         query_parameters=[
+#             bigquery.ScalarQueryParameter("user_id", "INT64", USER["id"]),
+#             bigquery.ScalarQueryParameter("gender", "STRING", USER["gender"]),
+#             bigquery.ScalarQueryParameter("num", "INT64", num_of_item),
+#         ]
+#     )
+
+#     client.query(order_query, job_config=job_config).result()
+
+#     # 2️⃣ Get order_id
+#     order_id = client.query("""
+#     SELECT order_id
+#     FROM `bigquery-public-data.thelook_ecommerce.orders`
+#     WHERE user_id = @user_id
+#     ORDER BY created_at DESC
+#     LIMIT 1
+#     """, job_config=bigquery.QueryJobConfig(
+#         query_parameters=[
+#             bigquery.ScalarQueryParameter("user_id", "INT64", USER["id"])
+#         ]
+#     )).result().to_dataframe().iloc[0]["order_id"]
+
+#     # 3️⃣ Loop products
+#     for p in cart:
+#         # inventory_items
+#         inventory_query = """
+#         INSERT INTO `bigquery-public-data.thelook_ecommerce.inventory_items`
+#           (product_id, created_at, cost, product_retail_price,
+#            product_name, product_brand, product_category,
+#            product_department, product_sku, product_distribution_center_id)
+#         VALUES
+#           (@pid, CURRENT_TIMESTAMP(), @cost, @price,
+#            @name, @brand, @category, @dept, @sku, @dc)
+#         """
+
+#         inventory_config = bigquery.QueryJobConfig(
+#             query_parameters=[
+#                 bigquery.ScalarQueryParameter("pid", "INT64", p["id"]),
+#                 bigquery.ScalarQueryParameter("cost", "FLOAT64", p.get("cost", 0)),
+#                 bigquery.ScalarQueryParameter("price", "FLOAT64", p["retail_price"]),
+#                 bigquery.ScalarQueryParameter("name", "STRING", p["name"]),
+#                 bigquery.ScalarQueryParameter("brand", "STRING", p["brand"]),
+#                 bigquery.ScalarQueryParameter("category", "STRING", p["category"]),
+#                 bigquery.ScalarQueryParameter("dept", "STRING", p["department"]),
+#                 bigquery.ScalarQueryParameter("sku", "STRING", p["sku"]),
+#                 bigquery.ScalarQueryParameter("dc", "INT64", p["distribution_center_id"]),
+#             ]
+#         )
+
+#         client.query(inventory_query, job_config=inventory_config).result()
+
+#         inventory_id = client.query("""
+#           SELECT id
+#             FROM `bigquery-public-data.thelook_ecommerce.inventory_items`
+#             WHERE product_id = @pid
+#             ORDER BY created_at DESC
+#             LIMIT 1
+#         """, job_config=bigquery.QueryJobConfig(
+#             query_parameters=[
+#                 bigquery.ScalarQueryParameter("pid", "INT64", p["id"])
+#             ]
+#         )).result().to_dataframe().iloc[0]["id"]
+
+#         # order_items
+#         order_item_query = """
+#         INSERT INTO `bigquery-public-data.thelook_ecommerce.order_items`
+#           (order_id, user_id, product_id, inventory_item_id,
+#            status, sale_price, created_at)
+#         VALUES
+#           (@oid, @uid, @pid, @iid,
+#            'Processing', @price, CURRENT_TIMESTAMP())
+#         """
+
+#         client.query(order_item_query, job_config=bigquery.QueryJobConfig(
+#             query_parameters=[
+#                 bigquery.ScalarQueryParameter("oid", "INT64", order_id),
+#                 bigquery.ScalarQueryParameter("uid", "INT64", USER["id"]),
+#                 bigquery.ScalarQueryParameter("pid", "INT64", p["id"]),
+#                 bigquery.ScalarQueryParameter("iid", "INT64", inventory_id),
+#                 bigquery.ScalarQueryParameter("price", "FLOAT64", p["retail_price"]),
+#             ]
+#         )).result()
+
+#     return {"order_id": order_id}
 
 @app.get("/health")
 def health():

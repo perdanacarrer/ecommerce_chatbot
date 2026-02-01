@@ -1,9 +1,13 @@
 let lastProducts = [];
 let compareList = [];
 let cart = [];
+let isCheckingOut = false;
 
 const messages = document.getElementById("messages");
 const quickReplies = document.getElementById("quickReplies");
+const quickReplyActions = {
+  "Checkout": checkout,
+};
 
 /* --------------------
    MESSAGE HELPERS
@@ -31,12 +35,16 @@ function hideTyping() {
   if (el) el.remove();
 }
 
+function clearCarousels() {
+  document.querySelectorAll(".carousel").forEach(el => el.remove());
+}
+
 /* --------------------
    PRODUCT RENDERING
 -------------------- */
 function renderProducts(products) {
   lastProducts = products;
-
+//   clearCarousels();
   const carousel = document.createElement("div");
   carousel.className = "carousel";
 
@@ -75,6 +83,37 @@ function renderProducts(products) {
   messages.scrollTop = messages.scrollHeight;
 }
 
+function renderCart(products) {
+//   clearCarousels();
+  const carousel = document.createElement("div");
+  carousel.className = "carousel";
+
+  products.forEach(product => {
+    const card = document.createElement("div");
+    card.className = "card";
+
+    card.innerHTML = `
+      <img src="/placeholder.svg" alt="${product.name}" />
+      <div class="card-title">${product.name}</div>
+      <div class="card-price">$${product.retail_price.toFixed(2)}</div>
+    `;
+
+    const actions = document.createElement("div");
+    actions.className = "card-actions";
+
+    const removeBtn = document.createElement("button");
+    removeBtn.innerText = "Remove ❌";
+    removeBtn.onclick = () => removeFromCart(product);
+
+    actions.appendChild(removeBtn);
+    card.appendChild(actions);
+    carousel.appendChild(card);
+  });
+
+  messages.appendChild(carousel);
+  messages.scrollTop = messages.scrollHeight;
+}
+
 /* --------------------
    QUICK REPLIES
 -------------------- */
@@ -86,7 +125,7 @@ function renderQuickReplies(replies) {
     btn.innerText = label;
     btn.onclick = () => {
         clearQuickReplies();
-        send(label);
+        (quickReplyActions[label] || send)(label);
     };
     quickReplies.appendChild(btn);
   });
@@ -119,6 +158,21 @@ async function send(textOverride) {
 
     const data = await res.json();
 
+    if (data.action === "show_cart") {
+      const cartRes = await fetch("http://localhost:8000/cart", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(cart)
+      });
+
+      const cartData = await cartRes.json();
+
+      if (cartData.reply) addMessage(cartData.reply, "bot");
+      renderCart(cartData.cart);
+
+      clearQuickReplies();
+      return;
+    }
     if (data.reply) addMessage(data.reply, "bot");
     if (data.products) renderProducts(data.products);
     if (data.quick_replies) {
@@ -173,10 +227,56 @@ function renderComparison(products) {
    CART FLOW
 -------------------- */
 function addToCart(product) {
+  if (cart.find(p => p.id === product.id)) {
+    addMessage(`${product.name} is already in your cart 🛒`, "system");
+    return;
+  }
   cart.push(product);
   addMessage(
     `${product.name} added to cart. Would you like to checkout or keep shopping?`,
     "bot"
   );
   renderQuickReplies(["Checkout", "Show more"]);
+}
+
+function removeFromCart(product) {
+  cart = cart.filter(p => p.id !== product.id);
+  addMessage(`❌ Removed ${product.name} from cart`);
+  renderCart(cart);
+}
+
+async function checkout() { 
+  if (isCheckingOut) return;
+  isCheckingOut = true;
+
+  try {
+    if (cart.length === 0) {
+      addMessage("Cart is empty 🛒");
+      renderQuickReplies(["Show more"]);
+      return;
+    }
+
+    const res = await fetch("http://localhost:8000/checkout", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cart })
+    });
+
+    if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Checkout failed");
+    }
+
+    const data = await res.json();
+    addMessage(`✅ Order placed! Order ID: ${data.order_id}`);
+
+    cart = [];
+    renderQuickReplies(["Show more"]);
+  } catch (err) {
+    console.error(err);
+    addMessage(`❌ ${err.message}`);
+    renderQuickReplies(["Checkout", "Show more"]);
+  } finally {
+    isCheckingOut = false;
+  }
 }
