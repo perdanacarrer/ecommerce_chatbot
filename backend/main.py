@@ -53,6 +53,10 @@ def is_show_cart_intent(message: str) -> bool:
     ]
     return any(k in msg for k in keywords)
 
+def is_gift_intent(message: str) -> bool:
+    msg = message.lower()
+    return any(k in msg for k in ["gift", "present", "buy for", "for my"])
+
 # -------------------------
 # HELPERS
 # -------------------------
@@ -109,6 +113,26 @@ def extract_price_constraint(message: str):
 
     # "$4 jackets", "priced $4"
     return price, "exact"
+
+def detect_recipient_gender(message: str):
+    msg = message.lower()
+
+    female = [
+        "girlfriend", "wife", "mother", "mom",
+        "sister", "daughter", "grandmother"
+    ]
+    male = [
+        "boyfriend", "husband", "father", "dad",
+        "brother", "son", "grandfather"
+    ]
+
+    if any(k in msg for k in female):
+        return "Women"
+
+    if any(k in msg for k in male):
+        return "Men"
+
+    return None
 
 def detect_gender_department(message: str):
     msg = message.lower()
@@ -214,9 +238,22 @@ def chat(message: str):
 
     # 🔍 Extract filters FIRST
     price, price_op = extract_price_constraint(message)
-    department = detect_gender_department(message)
+    recipient_gender = detect_recipient_gender(message)
+    gift_intent = is_gift_intent(message)
     size = detect_size(message)
     category = detect_category_keyword(message)
+
+    department = None
+    # 🎁 If buying for someone else → recipient wins
+    if gift_intent and recipient_gender:
+        department = recipient_gender
+
+    # 🙋 Otherwise → use user's gender
+    elif not gift_intent:
+        if USER["gender"] == "M":
+            department = "Men"
+        elif USER["gender"] == "F":
+            department = "Women"
     
     # 🔎 Extract possible product names
     p1, p2 = extract_comparison_products(message)
