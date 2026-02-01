@@ -1,0 +1,15 @@
+| User Input                                   | Behavior               |
+| -------------------------------------------- | ---------------------- |
+| `Show me winter jackets under $10 and small` | ✅ `<= 10 AND LIKE %s%` |
+| `Show me winter jackets over $4 and small`   | ✅ `>= 4`               |
+| `Show me $4 winter jackets and small`        | ✅ exact price          |
+| `Show me winter jackets under $4 and small`  | ✅ polite “no results”  |
+| Backend boot                                 | ✅ No IndentationError  |
+Show me winter jackets under $10 and for my girlfriend
+Show me winter jackets under $10 and small and for my father
+Do you have pants in medium?
+I need a gift for my girlfriend
+I need a gift for my father
+What's the difference between these two jackets?
+Low Profile Dyed Cotton Twill Cap - Navy W39S55D and Enzyme Regular Solid Army Caps-Black W35S45D
+show me my cart
