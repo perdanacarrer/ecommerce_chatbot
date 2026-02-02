@@ -21,6 +21,33 @@ function addMessage(text, sender = "bot") {
   messages.scrollTop = messages.scrollHeight;
 }
 
+function addMapMessage(stores) {
+  const wrapper = document.createElement("div")
+  wrapper.className = "message bot map"
+
+  const bubble = document.createElement("div")
+  bubble.className = "map-bubble"
+
+  const header = document.createElement("div")
+  header.className = "map-header"
+  header.innerText = "🗺 Nearest stores"
+
+  const mapDiv = document.createElement("div")
+  mapDiv.className = "map-container"
+
+  const mapId = `map-${Date.now()}`
+  mapDiv.id = mapId
+
+  bubble.appendChild(header)
+  bubble.appendChild(mapDiv)
+  wrapper.appendChild(bubble)
+
+  messages.appendChild(wrapper)
+  messages.scrollTop = messages.scrollHeight
+
+  renderStoreMap(mapId, stores)
+}
+
 function showTyping() {
   const div = document.createElement("div");
   div.className = "message system typing";
@@ -84,7 +111,7 @@ function renderProducts(products) {
 }
 
 function renderCart(products) {
-//   clearCarousels();
+  clearCarousels();
   const carousel = document.createElement("div");
   carousel.className = "carousel";
 
@@ -114,6 +141,38 @@ function renderCart(products) {
   messages.scrollTop = messages.scrollHeight;
 }
 
+function renderStoreMap(mapId, stores) {
+  const map = L.map(mapId)
+
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    attribution: "© OpenStreetMap"
+  }).addTo(map)
+
+  const markers = stores.map(store =>
+    L.marker([store.latitude, store.longitude])
+      .bindPopup(
+        `<strong>${store.name}</strong><br>${store.distance_km.toFixed(2)} km`
+      )
+      .addTo(map)
+  )
+
+  if (stores.length === 1) {
+    map.setView(
+      [stores[0].latitude, stores[0].longitude],
+      10
+    )
+  } else {
+    const bounds = L.latLngBounds(
+      stores.map(s => [s.latitude, s.longitude])
+    )
+    map.fitBounds(bounds, { padding: [30, 30] })
+  }
+
+  setTimeout(() => {
+    map.invalidateSize()
+  }, 200)
+}
+
 /* --------------------
    QUICK REPLIES
 -------------------- */
@@ -133,6 +192,11 @@ function renderQuickReplies(replies) {
 
 function clearQuickReplies() {
   quickReplies.innerHTML = "";
+}
+
+function showQuickReplies(items) {
+  if (!items || !items.length) return
+  renderQuickReplies(items)
 }
 
 /* --------------------
@@ -174,6 +238,16 @@ async function send(textOverride) {
       return;
     }
     if (data.reply) addMessage(data.reply, "bot");
+    if (data.stores && data.stores.length) {
+        addMapMessage(data.stores)
+        showQuickReplies([
+            "Show 5 closest stores",
+            "Only jackets",
+            "Under $100"
+        ])
+    }  else if (data.reply?.includes("store")) {
+        addMessage("📍 Map unavailable for this result", "system")
+    }
     if (data.products) renderProducts(data.products);
     if (data.quick_replies) {
         renderQuickReplies(data.quick_replies);

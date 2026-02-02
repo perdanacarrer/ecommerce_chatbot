@@ -71,6 +71,31 @@ body {
   font-size: 13px;
 }
 
+/* ===== MAP ===== */
+.message.map {
+  padding: 0;
+  background: transparent;
+}
+
+.map-bubble {
+  background: #ffffff;
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+  margin: 6px 0;
+}
+
+.map-header {
+  padding: 8px 12px;
+  font-weight: 600;
+  font-size: 14px;
+  background: #f4f6f8;
+}
+
+.map-container {
+  height: 240px;
+}
+
 /* ===== QUICK REPLIES ===== */
 .quick-replies {
   display: flex;
