@@ -16,3 +16,8 @@ show me my cart
 closest store
 show 3 nearest stores
 show 5 closest stores
+Closest store with this product
+Closest store with winter jackets
+Closest store with Low Profile Dyed Cotton Twill Cap
+Closest store with Enzyme Regular Solid Army Caps-Black W35S45D
+Show 3 nearest stores with jackets

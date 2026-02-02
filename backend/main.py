@@ -69,6 +69,16 @@ def is_closest_store_intent(message: str) -> bool:
     ]
     return any(k in msg for k in keywords)
 
+def is_closest_store_with_product_intent(message: str) -> bool:
+    msg = message.lower()
+    keywords = [
+        "closest store with",
+        "nearest store with",
+        "closest shop with",
+        "nearest shop with"
+    ]
+    return any(k in msg for k in keywords)
+
 # -------------------------
 # HELPERS
 # -------------------------
@@ -82,6 +92,54 @@ def extract_nearest_store_limit(message: str) -> int:
 
     # default
     return 1
+
+def extract_product_for_store_search(message: str):
+    original = message.strip()
+
+    # 1️⃣ Remove intent phrases (case-insensitive, from original text)
+    intent_patterns = [
+        r"closest store with",
+        r"nearest store with",
+        r"closest shop with",
+        r"nearest shop with",
+        r"closest store",
+        r"nearest store",
+        r"closest",
+        r"nearest",
+    ]
+
+    cleaned = original
+    for p in intent_patterns:
+        cleaned = re.sub(p, "", cleaned, flags=re.IGNORECASE).strip()
+
+    # 2️⃣ Category-based detection (cheap & reliable)
+    categories = [
+        "winter jacket", "winter jackets",
+        "jacket", "jackets",
+        "coat", "coats",
+        "hoodie", "hoodies",
+        "sweater", "sweaters",
+        "shirt", "shirts",
+        "dress", "pants"
+    ]
+
+    lowered = cleaned.lower()
+    for c in categories:
+        if c in lowered:
+            return c
+
+    # 3️⃣ Exact product name via capitalized words
+    words = cleaned.split()
+
+    product_words = [
+        w for w in words
+        if w[:1].isupper() and len(w) > 2
+    ]
+
+    if len(product_words) >= 3:
+        return " ".join(product_words)
+
+    return None
 
 def has_search_filters(message: str) -> bool:
     msg = message.lower()
@@ -275,12 +333,100 @@ def find_nearest_stores(user_lat: float, user_lng: float, limit: int = 1):
     results = client.query(query, job_config=job_config).result()
     return [dict(row) for row in results]
 
+def find_nearest_stores_with_product(
+    user_lat: float,
+    user_lng: float,
+    product_keyword: str,
+    limit: int = 5
+):
+    query = f"""
+    SELECT DISTINCT
+      dc.name,
+      dc.latitude,
+      dc.longitude,
+      ST_DISTANCE(
+        ST_GEOGPOINT(dc.longitude, dc.latitude),
+        ST_GEOGPOINT(@user_lng, @user_lat)
+      ) / 1000 AS distance_km
+    FROM `bigquery-public-data.thelook_ecommerce.distribution_centers` dc
+    JOIN `bigquery-public-data.thelook_ecommerce.products` p
+      ON dc.id = p.distribution_center_id
+    WHERE dc.latitude IS NOT NULL
+      AND dc.longitude IS NOT NULL
+      AND LOWER(p.name) LIKE @product
+    ORDER BY distance_km ASC
+    LIMIT {limit}
+    """
+
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("user_lat", "FLOAT64", user_lat),
+            bigquery.ScalarQueryParameter("user_lng", "FLOAT64", user_lng),
+            bigquery.ScalarQueryParameter(
+                "product",
+                "STRING",
+                f"%{product_keyword.lower()}%"
+            ),
+        ]
+    )
+
+    results = client.query(query, job_config=job_config).result()
+    return [dict(row) for row in results]
+
 # -------------------------
 # CHAT ENDPOINT
 # -------------------------
 @app.get("/chat")
 def chat(message: str):
     msg = message.lower()
+
+    # 🏪 CLOSEST STORE WITH PRODUCT
+    if is_closest_store_with_product_intent(message):
+        if not user_has_location(USER):
+            return {
+                "reply": "I don’t have your location to find nearby stores."
+            }
+
+        product = extract_product_for_store_search(message)
+
+        if not product:
+            return {
+                "reply": (
+                    "Which product are you looking for?\n"
+                    "You can say something like:\n"
+                    "• Closest store with winter jackets\n"
+                    "• Closest store with Levi’s Denim Jacket"
+                )
+            }
+
+        limit = extract_nearest_store_limit(message)
+
+        stores = find_nearest_stores_with_product(
+            USER["latitude"],
+            USER["longitude"],
+            product,
+            limit=limit
+        )
+
+        if not stores:
+            return {
+                "reply": (
+                    f"I couldn’t find nearby stores carrying {product}."
+                )
+            }
+
+        lines = []
+        for i, s in enumerate(stores, start=1):
+            lines.append(
+                f"{i}. {s['name']} — {round(s['distance_km'], 2)} km"
+            )
+
+        return {
+            "reply": (
+                f"🏪 Here are the nearest stores with {product}:\n\n"
+                + "\n".join(lines)
+            )
+        }
 
     # 📍 NEAREST STORES
     if is_closest_store_intent(message):
