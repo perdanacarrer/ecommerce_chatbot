@@ -57,9 +57,32 @@ def is_gift_intent(message: str) -> bool:
     msg = message.lower()
     return any(k in msg for k in ["gift", "present", "buy for", "for my"])
 
+def is_closest_store_intent(message: str) -> bool:
+    msg = message.lower()
+    keywords = [
+        "closest store",
+        "nearest store",
+        "closest distribution",
+        "nearest distribution",
+        "where is the closest store",
+        "where is nearest store"
+    ]
+    return any(k in msg for k in keywords)
+
 # -------------------------
 # HELPERS
 # -------------------------
+def extract_nearest_store_limit(message: str) -> int:
+    msg = message.lower()
+
+    # explicit number
+    match = re.search(r"\b(\d+)\b", msg)
+    if match:
+        return min(int(match.group(1)), 10)  # safety cap
+
+    # default
+    return 1
+
 def has_search_filters(message: str) -> bool:
     msg = message.lower()
 
@@ -222,12 +245,86 @@ USER = get_user(USER_ID)
 if not USER:
     raise RuntimeError(f"User {USER_ID} not found in database")
 
+def user_has_location(user: dict) -> bool:
+    return user.get("latitude") is not None and user.get("longitude") is not None
+
+def find_nearest_stores(user_lat: float, user_lng: float, limit: int = 1):
+    query = f"""
+    SELECT
+      name,
+      latitude,
+      longitude,
+      ST_DISTANCE(
+        ST_GEOGPOINT(longitude, latitude),
+        ST_GEOGPOINT(@user_lng, @user_lat)
+      ) / 1000 AS distance_km
+    FROM `bigquery-public-data.thelook_ecommerce.distribution_centers`
+    WHERE latitude IS NOT NULL
+      AND longitude IS NOT NULL
+    ORDER BY distance_km ASC
+    LIMIT {limit}
+    """
+
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("user_lat", "FLOAT64", user_lat),
+            bigquery.ScalarQueryParameter("user_lng", "FLOAT64", user_lng),
+        ]
+    )
+
+    results = client.query(query, job_config=job_config).result()
+    return [dict(row) for row in results]
+
 # -------------------------
 # CHAT ENDPOINT
 # -------------------------
 @app.get("/chat")
 def chat(message: str):
     msg = message.lower()
+
+    # 📍 NEAREST STORES
+    if is_closest_store_intent(message):
+        if not user_has_location(USER):
+            return {
+                "reply": "Sorry, I don’t have your location to find nearby stores."
+            }
+
+        limit = extract_nearest_store_limit(message)
+
+        stores = find_nearest_stores(
+            USER["latitude"],
+            USER["longitude"],
+            limit=limit
+        )
+
+        if not stores:
+            return {
+                "reply": "I couldn’t find any nearby stores."
+            }
+
+        if limit == 1:
+            store = stores[0]
+            distance = round(store["distance_km"], 2)
+            return {
+                "reply": (
+                    f"📍 The closest store to you is {store['name']}, "
+                    f"about {distance} km away."
+                )
+            }
+
+        # multiple stores
+        lines = []
+        for i, s in enumerate(stores, start=1):
+            lines.append(
+                f"{i}. {s['name']} — {round(s['distance_km'], 2)} km"
+            )
+
+        return {
+            "reply": (
+                f"📍 Here are the {len(stores)} nearest stores to you:\n\n"
+                + "\n".join(lines)
+            )
+        }
 
     # 🛒 SHOW CART
     if is_show_cart_intent(message):
