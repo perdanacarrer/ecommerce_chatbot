@@ -57,18 +57,6 @@ def is_gift_intent(message: str) -> bool:
     msg = message.lower()
     return any(k in msg for k in ["gift", "present", "buy for", "for my"])
 
-def is_closest_store_intent(message: str) -> bool:
-    msg = message.lower()
-    keywords = [
-        "closest store",
-        "nearest store",
-        "closest distribution",
-        "nearest distribution",
-        "where is the closest store",
-        "where is nearest store"
-    ]
-    return any(k in msg for k in keywords)
-
 def is_closest_store_with_product_intent(message: str) -> bool:
     msg = message.lower()
     keywords = [
@@ -76,6 +64,20 @@ def is_closest_store_with_product_intent(message: str) -> bool:
         "nearest store with",
         "closest shop with",
         "nearest shop with"
+    ]
+    return any(k in msg for k in keywords)
+
+def is_closest_store_intent(message: str) -> bool:
+    msg = message.lower()
+    keywords = [
+        "closest store",
+        "nearest store",
+        "closest shop",
+        "nearest shop",
+        "closest distribution",
+        "nearest distribution",
+        "where is the closest store",
+        "where is nearest store"
     ]
     return any(k in msg for k in keywords)
 
@@ -140,6 +142,23 @@ def extract_product_for_store_search(message: str):
         return " ".join(product_words)
 
     return None
+
+def extract_store_filters(message: str, user_gender: str):
+    price, price_op = extract_price_constraint(message)
+    size = detect_size(message)
+    category = detect_category_keyword(message)
+    product = extract_product_for_store_search(message)
+
+    department = detect_target_gender(message, user_gender)
+
+    return {
+        "product": product,
+        "category": category,
+        "price": price,
+        "price_op": price_op,
+        "size": size,
+        "department": department,
+    }
 
 def has_search_filters(message: str) -> bool:
     msg = message.lower()
@@ -228,6 +247,30 @@ def detect_gender_department(message: str):
 
     return None
 
+def detect_target_gender(message: str, user_gender: str | None):
+    msg = message.lower()
+
+    female_targets = [
+        "girlfriend", "wife", "mother", "mom",
+        "sister", "daughter", "grandmother"
+    ]
+
+    male_targets = [
+        "boyfriend", "husband", "father", "dad",
+        "son", "grandfather"
+    ]
+
+    if any(k in msg for k in female_targets):
+        return "Women"
+
+    if any(k in msg for k in male_targets):
+        return "Men"
+
+    # fallback → user's own gender
+    if user_gender:
+        return "Women" if user_gender.lower().startswith("f") else "Men"
+
+    return None
 
 def detect_size(message: str):
     msg = message.lower()
@@ -428,15 +471,135 @@ def chat(message: str):
             )
         }
 
-    # 📍 NEAREST STORES
+    # 🏪 CLOSEST STORE (plain + filtered + product)
     if is_closest_store_intent(message):
+
         if not user_has_location(USER):
             return {
                 "reply": "Sorry, I don’t have your location to find nearby stores."
             }
 
+        filters = extract_store_filters(message, USER["gender"])
         limit = extract_nearest_store_limit(message)
 
+        has_filters = any([
+            filters["product"],
+            filters["category"],
+            filters["size"],
+            filters["price"] is not None,
+            filters["department"],
+        ])
+
+        # ❓ "closest store with this product"
+        if "this product" in message.lower() and not filters["product"]:
+            return {
+                "reply": "Which product are you looking for? Please provide the product name."
+            }
+
+        # ======================================================
+        # 🔎 FILTERED STORE SEARCH (JOIN products)
+        # ======================================================
+        if has_filters:
+            query = f"""
+            SELECT
+            dc.name AS store_name,
+            ROUND(
+            ST_DISTANCE(
+            ST_GEOGPOINT(dc.longitude, dc.latitude),
+            ST_GEOGPOINT(@user_lng, @user_lat)
+            ) / 1000,
+            2
+            ) AS distance_km
+            FROM `bigquery-public-data.thelook_ecommerce.distribution_centers` dc
+            JOIN `bigquery-public-data.thelook_ecommerce.products` p
+            ON p.distribution_center_id = dc.id
+            WHERE dc.latitude IS NOT NULL
+            AND dc.longitude IS NOT NULL
+            """
+
+            params = [
+                bigquery.ScalarQueryParameter("user_lat", "FLOAT64", USER["latitude"]),
+                bigquery.ScalarQueryParameter("user_lng", "FLOAT64", USER["longitude"]),
+            ]
+
+            # 🎯 Product
+            if filters["product"]:
+                query += " AND LOWER(p.name) LIKE @product"
+                params.append(
+                    bigquery.ScalarQueryParameter(
+                        "product", "STRING", f"%{filters['product'].lower()}%"
+                    )
+                )
+
+            # 🧥 Category
+            if filters["category"]:
+                query += " AND LOWER(p.name) LIKE @category"
+                params.append(
+                    bigquery.ScalarQueryParameter(
+                        "category", "STRING", f"%{filters['category']}%"
+                    )
+                )
+
+            # 👕 Size
+            if filters["size"]:
+                query += " AND LOWER(p.name) LIKE @size"
+                params.append(
+                    bigquery.ScalarQueryParameter(
+                        "size", "STRING", f"%{filters['size']}%"
+                    )
+                )
+
+            # 💰 Price
+            if filters["price"] is not None:
+                if filters["price_op"] == "under":
+                    query += " AND p.retail_price <= @price"
+                elif filters["price_op"] == "over":
+                    query += " AND p.retail_price >= @price"
+                else:
+                    query += " AND p.retail_price BETWEEN @low AND @high"
+
+                if filters["price_op"] == "exact":
+                    params.extend([
+                        bigquery.ScalarQueryParameter("low", "FLOAT64", filters["price"] - 0.01),
+                        bigquery.ScalarQueryParameter("high", "FLOAT64", filters["price"] + 0.01),
+                    ])
+                else:
+                    params.append(
+                        bigquery.ScalarQueryParameter("price", "FLOAT64", filters["price"])
+                    )
+
+            # 🧍 Department
+            if filters["department"]:
+                query += " AND p.department = @dept"
+                params.append(
+                    bigquery.ScalarQueryParameter("dept", "STRING", filters["department"])
+                )
+
+            query += f"""
+            GROUP BY store_name, distance_km
+            ORDER BY distance_km
+            LIMIT {limit}
+            """
+
+            stores = list(client.query(
+                query,
+                job_config=bigquery.QueryJobConfig(query_parameters=params)
+            ).result())
+
+            if not stores:
+                return {
+                    "reply": "I couldn’t find nearby stores matching those criteria 😕"
+                }
+
+            reply = "🏪 Nearest matching stores:\n\n"
+            for i, s in enumerate(stores, 1):
+                reply += f"{i}️⃣ {s.store_name} — {s.distance_km} km\n"
+
+            return {"reply": reply}
+
+        # ======================================================
+        # 📍 PLAIN NEAREST STORES (no product join)
+        # ======================================================
         stores = find_nearest_stores(
             USER["latitude"],
             USER["longitude"],
@@ -444,26 +607,21 @@ def chat(message: str):
         )
 
         if not stores:
-            return {
-                "reply": "I couldn’t find any nearby stores."
-            }
+            return {"reply": "I couldn’t find any nearby stores."}
 
         if limit == 1:
-            store = stores[0]
-            distance = round(store["distance_km"], 2)
+            s = stores[0]
             return {
                 "reply": (
-                    f"📍 The closest store to you is {store['name']}, "
-                    f"about {distance} km away."
+                    f"📍 The closest store to you is {s['name']}, "
+                    f"about {round(s['distance_km'], 2)} km away."
                 )
             }
 
-        # multiple stores
-        lines = []
-        for i, s in enumerate(stores, start=1):
-            lines.append(
-                f"{i}. {s['name']} — {round(s['distance_km'], 2)} km"
-            )
+        lines = [
+            f"{i}. {s['name']} — {round(s['distance_km'], 2)} km"
+            for i, s in enumerate(stores, 1)
+        ]
 
         return {
             "reply": (
