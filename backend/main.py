@@ -298,11 +298,6 @@ def detect_target_gender(message: str, user_gender: str | None):
     if any(k in msg for k in male_targets):
         return "Men"
 
-    if user_gender == "M":
-        return "Men"
-    if user_gender == "F":
-        return "Women"
-
     return None
 
 def detect_size(message: str):
@@ -457,6 +452,10 @@ def find_nearest_stores_with_product(
 @app.get("/chat")
 def chat(message: str):
     msg = message.lower()
+    is_quick_reply = (
+        is_relax_price_intent(message)
+        and "filters" in LAST_SEARCH
+    )
     department = None
     recipient_department = detect_recipient_gender(message)
     has_recipient = recipient_department is not None
@@ -466,9 +465,7 @@ def chat(message: str):
         size = filters.get("size")
         price = None
         price_op = None
-        # ❗ NEVER override explicit recipient
-        if not has_recipient:
-            department = filters.get("department", None)
+        department = filters.get("department")
 
     # 🏷️ CHEAPEST NEARBY STORE
     if is_cheapest_store_intent(message):
@@ -804,18 +801,18 @@ def chat(message: str):
         department = None
     elif department:
         pass  # keep existing department
-    else:
+    elif not is_quick_reply:
         if USER["gender"] == "M":
             department = "Men"
         elif USER["gender"] == "F":
             department = "Women"
 
     # 💾 Save ONLY non-gift product searches
-    if not gift_intent and (category or size or price is not None):
+    if not is_quick_reply:
         LAST_SEARCH["filters"] = {
             "category": category,
             "size": size,
-            "department": department if not gift_intent else None,
+            "department": department,
         }
     
     # 🔎 Extract possible product names
