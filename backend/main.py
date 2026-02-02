@@ -61,6 +61,25 @@ def is_gift_intent(message: str) -> bool:
         "wife", "husband", "mom", "dad", "father", "mother"
     ])
 
+def has_explicit_recipient(message: str) -> bool:
+    msg = message.lower()
+    return any(k in msg for k in [
+        "for my father", "for my dad", "for my brother",
+        "for my husband", "for my son",
+        "for my mother", "for my mom", "for my sister",
+        "for my wife", "for my daughter"
+    ])
+
+def is_relax_price_intent(message: str) -> bool:
+    return message.lower() in [
+        "increase budget",
+        "raise budget",
+        "higher budget",
+        "remove price limit",
+        "remove size filter",
+        "show similar items"
+    ]
+
 def is_closest_store_with_product_intent(message: str) -> bool:
     msg = message.lower()
     keywords = [
@@ -232,7 +251,7 @@ def detect_recipient_gender(message: str):
 
     female = [
         "girlfriend", "wife", "mother", "mom",
-        "sister", "daughter", "grandmother", "her"
+        "sister", "daughter", "grandmother"
     ]
     male = [
         "boyfriend", "husband", "father", "dad",
@@ -250,7 +269,7 @@ def detect_recipient_gender(message: str):
 def detect_gender_department(message: str):
     msg = message.lower()
 
-    women_keywords = ["girlfriend", "wife", "mother", "mom", "sister", "grandmother", "parent", "her"]
+    women_keywords = ["girlfriend", "wife", "mother", "mom", "sister", "grandmother", "parent"]
     men_keywords = ["boyfriend", "man", "father", "dad", "son", "grandfather", "parent", "him"]
 
     if any(k in msg for k in women_keywords):
@@ -265,7 +284,7 @@ def detect_target_gender(message: str, user_gender: str | None):
 
     female_targets = [
         "girlfriend", "wife", "mother", "mom",
-        "sister", "daughter", "grandmother", "her"
+        "sister", "daughter", "grandmother"
     ]
 
     male_targets = [
@@ -278,6 +297,11 @@ def detect_target_gender(message: str, user_gender: str | None):
 
     if any(k in msg for k in male_targets):
         return "Men"
+
+    if user_gender == "M":
+        return "Men"
+    if user_gender == "F":
+        return "Women"
 
     return None
 
@@ -355,6 +379,8 @@ USER = get_user(USER_ID)
 if not USER:
     raise RuntimeError(f"User {USER_ID} not found in database")
 
+LAST_SEARCH = {}
+
 def user_has_location(user: dict) -> bool:
     return user.get("latitude") is not None and user.get("longitude") is not None
 
@@ -431,6 +457,18 @@ def find_nearest_stores_with_product(
 @app.get("/chat")
 def chat(message: str):
     msg = message.lower()
+    department = None
+    recipient_department = detect_recipient_gender(message)
+    has_recipient = recipient_department is not None
+    if is_relax_price_intent(message) and "filters" in LAST_SEARCH:
+        filters = LAST_SEARCH["filters"]
+        category = filters.get("category")
+        size = filters.get("size")
+        price = None
+        price_op = None
+        # ❗ NEVER override explicit recipient
+        if not has_recipient:
+            department = filters.get("department", None)
 
     # 🏷️ CHEAPEST NEARBY STORE
     if is_cheapest_store_intent(message):
@@ -755,20 +793,30 @@ def chat(message: str):
 
     # 🔍 Extract filters FIRST
     price, price_op = extract_price_constraint(message)
-    recipient_department = detect_recipient_gender(message)
     gift_intent = is_gift_intent(message)
     size = detect_size(message)
     category = detect_category_keyword(message)
 
+    # 🎯 Department resolution (strict priority)
     if recipient_department:
-        department = recipient_department
+        department = recipient_department  # 🔒 HARD LOCK
+    elif gift_intent:
+        department = None
+    elif department:
+        pass  # keep existing department
     else:
         if USER["gender"] == "M":
             department = "Men"
         elif USER["gender"] == "F":
             department = "Women"
-        else:
-            department = None
+
+    # 💾 Save ONLY non-gift product searches
+    if not gift_intent and (category or size or price is not None):
+        LAST_SEARCH["filters"] = {
+            "category": category,
+            "size": size,
+            "department": department if not gift_intent else None,
+        }
     
     # 🔎 Extract possible product names
     p1, p2 = extract_comparison_products(message)
