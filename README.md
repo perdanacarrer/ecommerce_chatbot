@@ -5,6 +5,12 @@ The system is built with a FastAPI backend, a chat-style frontend, and real prod
 
 ---
 
+## 🎥 Demo Video
+
+https://github.com/perdanacarrer/ecommerce_chatbot/blob/main/screen_record/result.mp4
+
+---
+
 ## 🚀 Features
 
 - Chat-based product discovery
