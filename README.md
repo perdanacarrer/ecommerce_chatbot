@@ -7,7 +7,7 @@ The system is built with a FastAPI backend, a chat-style frontend, and real prod
 
 ## 🎥 Demo Video
 
-
+https://github.com/user-attachments/assets/5890b91b-1994-41b7-bc72-e3392ddbc62b
 
 ---
 
