@@ -116,6 +116,13 @@ def is_cheapest_store_intent(message: str) -> bool:
 # -------------------------
 # HELPERS
 # -------------------------
+def attach_user_location(payload: dict):
+    payload["user_location"] = {
+        "latitude": USER["latitude"],
+        "longitude": USER["longitude"]
+    }
+    return payload
+
 def extract_nearest_store_limit(message: str) -> int:
     msg = message.lower()
 
@@ -382,6 +389,7 @@ def user_has_location(user: dict) -> bool:
 def find_nearest_stores(user_lat: float, user_lng: float, limit: int = 1):
     query = f"""
     SELECT
+      id,
       name,
       latitude,
       longitude,
@@ -414,6 +422,7 @@ def find_nearest_stores_with_product(
 ):
     query = f"""
     SELECT DISTINCT
+      dc.id,
       dc.name,
       dc.latitude,
       dc.longitude,
@@ -446,6 +455,95 @@ def find_nearest_stores_with_product(
     results = client.query(query, job_config=job_config).result()
     return [dict(row) for row in results]
 
+def extract_store_id(message: str) -> int | None:
+    match = re.search(r"\b(\d+)\b", message)
+    if match:
+        return int(match.group(1))
+    return None
+
+def get_store_details(store_id: int):
+    query = """
+    SELECT
+      dc.id,
+      dc.name,
+      dc.latitude,
+      dc.longitude,
+      COUNT(p.id) AS product_count,
+      MIN(p.retail_price) AS cheapest_price,
+      MAX(p.retail_price) AS most_expensive_price
+    FROM `bigquery-public-data.thelook_ecommerce.distribution_centers` dc
+    LEFT JOIN `bigquery-public-data.thelook_ecommerce.products` p
+      ON p.distribution_center_id = dc.id
+    WHERE dc.id = @store_id
+    GROUP BY dc.id, dc.name, dc.latitude, dc.longitude
+    """
+
+    results = list(client.query(
+        query,
+        job_config=bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("store_id", "INT64", store_id)
+            ]
+        )
+    ).result())
+
+    if not results:
+        return {"reply": "Store not found 😕"}
+
+    s = results[0]
+
+    return {
+        "reply": (
+            f"🏪 {s.name}\n"
+            f"• Products: {s.product_count}\n"
+            f"• Cheapest item: ${round(s.cheapest_price, 2)}\n"
+            f"• Most expensive item: ${round(s.most_expensive_price, 2)}"
+        ),
+        "stores": [{
+            "id": s.id,
+            "name": s.name,
+            "latitude": s.latitude,
+            "longitude": s.longitude,
+            "distance_km": 0
+        }]
+    }
+
+def search_products_in_store(store_id: int):
+    query = """
+    SELECT
+      p.id,
+      p.name,
+      p.brand,
+      p.category,
+      p.department,
+      p.retail_price,
+      p.sku,
+      dc.name AS distribution_name
+    FROM `bigquery-public-data.thelook_ecommerce.products` p
+    JOIN `bigquery-public-data.thelook_ecommerce.distribution_centers` dc
+      ON p.distribution_center_id = dc.id
+    WHERE dc.id = @store_id
+    ORDER BY p.retail_price ASC
+    LIMIT 10
+    """
+
+    products = list(client.query(
+        query,
+        job_config=bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("store_id", "INT64", store_id)
+            ]
+        )
+    ).result())
+
+    if not products:
+        return {"reply": "No products found in this store 😕"}
+
+    return {
+        "reply": "🛍 Products available in this store:",
+        "products": [dict(p) for p in products]
+    }
+
 # -------------------------
 # CHAT ENDPOINT
 # -------------------------
@@ -456,6 +554,17 @@ def chat(message: str):
         is_relax_price_intent(message)
         and "filters" in LAST_SEARCH
     )
+    # ================================
+    # 🏬 STORE UI ACTIONS (HIGH PRIORITY)
+    # ================================
+    if message.startswith("store details"):
+        store_id = extract_store_id(message)
+        return get_store_details(store_id)
+
+    if message.startswith("search store"):
+        store_id = extract_store_id(message)
+        return search_products_in_store(store_id)
+
     department = None
     recipient_department = detect_recipient_gender(message)
     has_recipient = recipient_department is not None
@@ -518,6 +627,7 @@ def chat(message: str):
             )
 
             stores.append({
+                "id": s.id,
                 "name": s.name,
                 "latitude": s.latitude,
                 "longitude": s.longitude,
@@ -525,10 +635,10 @@ def chat(message: str):
                 "cheapest_price": float(s.cheapest_price),
             })
 
-        return {
+        return attach_user_location({
             "reply": reply,
             "stores": stores
-        }
+        })
 
     # 🏪 CLOSEST STORE WITH PRODUCT
     if is_closest_store_with_product_intent(message):
@@ -575,19 +685,20 @@ def chat(message: str):
 
         for s in stores:
             store_payload.append({
+                "id": s["id"],
                 "name": s["name"],
                 "latitude": s["latitude"],
                 "longitude": s["longitude"],
                 "distance_km": float(s["distance_km"]),
             })
 
-        return {
+        return attach_user_location({
             "reply": (
                 f"🏪 Here are the nearest stores with {product}:\n\n"
                 + "\n".join(lines)
             ),
             "stores": store_payload
-        }
+        })
 
     # 🏪 CLOSEST STORE (plain + filtered + product)
     if is_closest_store_intent(message):
@@ -719,16 +830,17 @@ def chat(message: str):
                 reply += f"{i}️⃣ {s.store_name} — {s.distance_km} km\n"
 
                 store_payload.append({
+                    "id": s.store_id,
                     "name": s.store_name,
                     "latitude": s.latitude,
                     "longitude": s.longitude,
                     "distance_km": float(s.distance_km),
                 })
 
-            return {
+            return attach_user_location({
                 "reply": reply,
                 "stores": store_payload
-            }
+            })
 
         # ======================================================
         # 📍 PLAIN NEAREST STORES (no product join)
@@ -745,18 +857,19 @@ def chat(message: str):
         if limit == 1:
             s = stores[0]
 
-            return {
+            return attach_user_location({
                 "reply": (
                     f"📍 The closest store to you is {s['name']}, "
                     f"about {round(s['distance_km'], 2)} km away."
                 ),
                 "stores": [{
+                    "id": s["id"],
                     "name": s["name"],
                     "latitude": s["latitude"],
                     "longitude": s["longitude"],
                     "distance_km": float(s["distance_km"]),
                 }]
-            }
+            })
 
         lines = [
             f"{i}. {s['name']} — {round(s['distance_km'], 2)} km"
@@ -767,19 +880,20 @@ def chat(message: str):
 
         for s in stores:
             store_payload.append({
+                "id": s["id"],
                 "name": s["name"],
                 "latitude": s["latitude"],
                 "longitude": s["longitude"],
                 "distance_km": float(s["distance_km"]),
             })
 
-        return {
+        return attach_user_location({
             "reply": (
                 f"📍 Here are the {len(stores)} nearest stores to you:\n\n"
                 + "\n".join(lines)
             ),
             "stores": store_payload
-        }
+        })
 
     # 🛒 SHOW CART
     if is_show_cart_intent(message):
@@ -833,8 +947,10 @@ def chat(message: str):
         FROM `bigquery-public-data.thelook_ecommerce.products` p
         LEFT JOIN `bigquery-public-data.thelook_ecommerce.distribution_centers` dc
         ON p.distribution_center_id = dc.id
-        WHERE LOWER(p.name) LIKE @p1
+        WHERE
+        LOWER(p.name) LIKE @p1
         OR LOWER(p.name) LIKE @p2
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY p.id ORDER BY p.id) = 1
         """
 
         job_config = bigquery.QueryJobConfig(
@@ -972,10 +1088,10 @@ def chat(message: str):
 
     reply = " ".join(reply_parts) + "."
 
-    return {
+    return attach_user_location({
         "reply": reply,
         "products": products
-    }
+    })
 
 @app.post("/cart")
 def show_cart(cart: list = Body(...)):

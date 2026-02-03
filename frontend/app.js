@@ -2,6 +2,7 @@ let lastProducts = [];
 let compareList = [];
 let cart = [];
 let isCheckingOut = false;
+let userLocation = null;
 
 const messages = document.getElementById("messages");
 const quickReplies = document.getElementById("quickReplies");
@@ -64,6 +65,30 @@ function hideTyping() {
 
 function clearCarousels() {
   document.querySelectorAll(".carousel").forEach(el => el.remove());
+}
+
+function openDirections(storeLat, storeLng) {
+  if (!userLocation) {
+    alert("User location unavailable")
+    return
+  }
+  const { latitude, longitude } = userLocation
+  window.open(
+    `https://www.google.com/maps/dir/?api=1`
+    + `&origin=${latitude},${longitude}`
+    + `&destination=${storeLat},${storeLng}`,
+    "_blank"
+  )
+}
+
+function searchStore(storeId, storeName) {
+  addMessage(`Search products in ${storeName}`, "user")
+  sendBackendCommand(`search store ${storeId}`)
+}
+
+function showStoreDetails(storeId, storeName) {
+  addMessage(`View details for ${storeName}`, "user")
+  sendBackendCommand(`store details ${storeId}`)
 }
 
 /* --------------------
@@ -150,9 +175,19 @@ function renderStoreMap(mapId, stores) {
 
   const markers = stores.map(store =>
     L.marker([store.latitude, store.longitude])
-      .bindPopup(
-        `<strong>${store.name}</strong><br>${store.distance_km.toFixed(2)} km`
-      )
+      .bindPopup(`
+        <strong>${store.name}</strong><br>
+        📍 ${store.distance_km.toFixed(2)} km<br><br>
+        <button onclick="searchStore('${store.id}', '${store.name.replace(/'/g, "\\'")}')">
+            Search this store
+        </button><br>
+        <button onclick="showStoreDetails('${store.id}', '${store.name.replace(/'/g, "\\'")}')">
+            View details
+        </button><br>
+        <button onclick="openDirections(${store.latitude}, ${store.longitude})">
+            Directions
+        </button>
+      `)
       .addTo(map)
   )
 
@@ -202,6 +237,22 @@ function showQuickReplies(items) {
 /* --------------------
    SEND MESSAGE
 -------------------- */
+async function sendBackendCommand(command) {
+  showTyping()
+
+  const res = await fetch(
+    `http://localhost:8000/chat?message=${encodeURIComponent(command)}`
+  )
+
+  hideTyping()
+  const data = await res.json()
+
+  if (data.reply) addMessage(data.reply, "bot")
+  if (data.stores) addMapMessage(data.stores)
+  if (data.products) renderProducts(data.products)
+  if (data.quick_replies) renderQuickReplies(data.quick_replies)
+}
+
 async function send(textOverride) {
   clearQuickReplies();
   const input = document.getElementById("messageInput");
@@ -238,6 +289,9 @@ async function send(textOverride) {
       return;
     }
     if (data.reply) addMessage(data.reply, "bot");
+    if (data.user_location) {
+        userLocation = data.user_location
+    }
     if (data.stores && data.stores.length) {
         addMapMessage(data.stores)
         showQuickReplies([
