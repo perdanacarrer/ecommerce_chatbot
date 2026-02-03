@@ -7,7 +7,7 @@ The system is built with a FastAPI backend, a chat-style frontend, and real prod
 
 ## 🎥 Demo Video
 
-https://github.com/perdanacarrer/ecommerce_chatbot/blob/main/screen_record/result.mp4
+<video src="screen_record/result.mp4" controls width="800"></video>
 
 ---
 
