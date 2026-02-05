@@ -67,7 +67,9 @@ function hideTyping() {
   const el = document.getElementById("typing");
   if (el) el.remove();
 
-  enableUserInput();
+  setTimeout(() => {
+    enableUserInput();
+  }, 700)
 }
 
 function clearCarousels() {
