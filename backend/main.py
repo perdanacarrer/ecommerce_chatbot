@@ -253,25 +253,47 @@ def extract_price_constraint(message: str):
     # "$4 jackets", "priced $4"
     return price, "exact"
 
-def resolve_recipient_department(message: str):
+def resolve_recipient_departments(message: str):
     msg = message.lower()
+    LAST_CONTEXT["recipients"] = []
+    LAST_CONTEXT["departments"] = []
+    LAST_CONTEXT["last_recipient"] = None
+    LAST_CONTEXT["last_recipient_source"] = None
+    recipients = []
+    departments = []
 
+    # explicit parents
     if "parents" in msg:
-        LAST_CONTEXT["recipient"] = "parents"
-        LAST_CONTEXT["department"] = ["Men", "Women"]
+        LAST_CONTEXT["recipients"] = ["parents"]
+        LAST_CONTEXT["departments"] = ["Men", "Women"]
+        LAST_CONTEXT["last_recipient"] = "parents"
+        LAST_CONTEXT["last_recipient_source"] = "product"
         return ["Men", "Women"]
 
+    # explicit named recipients
     for word, dept in RECIPIENT_MAP.items():
         if word in msg:
-            LAST_CONTEXT["recipient"] = word
-            LAST_CONTEXT["department"] = dept
-            return dept
+            recipients.append(word)
+            if dept not in departments:
+                departments.append(dept)
 
+    if recipients:
+        LAST_CONTEXT["recipients"] = recipients
+        LAST_CONTEXT["departments"] = departments
+        LAST_CONTEXT["last_recipient"] = recipients[-1]
+        LAST_CONTEXT["last_recipient_source"] = "product"
+        return departments
+
+    # pronouns (fallback)
     for pronoun, dept in PRONOUN_MAP.items():
-        if pronoun in msg:
-            LAST_CONTEXT["recipient"] = pronoun
-            LAST_CONTEXT["department"] = dept
-            return dept
+        if (
+            pronoun in msg
+            and LAST_CONTEXT["last_recipient"]
+            and LAST_CONTEXT.get("last_recipient_source") == "product"
+        ):
+            LAST_CONTEXT["recipients"] = [LAST_CONTEXT["last_recipient"]]
+            LAST_CONTEXT["departments"] = [dept]
+            return [dept]
 
     return None
 
@@ -391,8 +413,10 @@ if not USER:
 LAST_SEARCH = {}
 
 LAST_CONTEXT = {
-    "recipient": None,        # e.g. "father", "mother"
-    "department": None        # "Men" or "Women"
+    "recipients": [],         # ["girlfriend", "brother"]
+    "departments": [],        # ["Women", "Men"]
+    "last_recipient": None,    # for pronouns (him / her)
+    "last_recipient_source": None
 }
 
 RECIPIENT_MAP = {
@@ -603,19 +627,36 @@ def chat(message: str):
         return search_products_in_store(store_id)
 
     department = None
-    prev_department = LAST_CONTEXT.get("department")
-    recipient_department = resolve_recipient_department(message)
-    has_recipient = recipient_department is not None
+    prev_department = LAST_CONTEXT.get("departments")
+    # Only resolve recipients for real user messages, not quick replies
+    if not is_quick_reply:
+        recipient_departments = resolve_recipient_departments(message)
+    else:
+        recipient_departments = LAST_CONTEXT.get("departments")
+    # 🔒 HARD FREEZE multi-recipient departments
+    if isinstance(recipient_departments, list) and len(recipient_departments) > 1:
+        department = recipient_departments
+    LAST_CONTEXT["department"] = recipient_departments
+
+    has_recipient = bool(recipient_departments)
+
+    if (
+        any(p in msg for p in ["him", "her"])
+        and not recipient_departments
+    ):
+        return {
+            "reply": "Who are you referring to?"
+        }
 
     # 👤 Pronoun should override previous "parents" context
     if (
-        recipient_department
+        recipient_departments
         and isinstance(prev_department, list)
         and len(prev_department) == 2
-        and len(recipient_department) == 1
+        and len(recipient_departments) == 1
     ):
-        LAST_CONTEXT["department"] = recipient_department
-        department = recipient_department
+        LAST_CONTEXT["department"] = recipient_departments
+        department = recipient_departments
 
     if is_relax_price_intent(message) and "filters" in LAST_SEARCH:
         filters = LAST_SEARCH["filters"]
@@ -992,7 +1033,7 @@ def chat(message: str):
         price, price_op = extract_price_constraint(message)
     gift_intent = is_gift_intent(message)
     # 🎁 NEW GIFT INTENT SHOULD RESET PREVIOUS RECIPIENT CONTEXT
-    if gift_intent and recipient_department is None:
+    if gift_intent and recipient_departments is None:
         LAST_CONTEXT["recipient"] = None
         LAST_CONTEXT["department"] = None
 
@@ -1000,8 +1041,8 @@ def chat(message: str):
     category = detect_category_keyword(message)
 
     # 🎯 Department resolution (strict priority)
-    if recipient_department:
-        department = recipient_department  # 🔒 HARD LOCK
+    if recipient_departments:
+        department = recipient_departments  # 🔒 HARD LOCK
     elif gift_intent:
         department = None
     elif LAST_CONTEXT.get("department"):
@@ -1010,7 +1051,12 @@ def chat(message: str):
         pass  # keep existing department
 
     # 🔒 HARD ENFORCE department for normal searches
-    if not department and not gift_intent:
+    if (
+        not department
+        and not gift_intent
+        and not has_recipient
+        and not LAST_CONTEXT.get("recipients")
+    ):
         if USER.get("gender") == "M":
             department = "Men"
         elif USER.get("gender") == "F":
@@ -1149,15 +1195,16 @@ def chat(message: str):
         if category:
             reasons.append(category + "s")
 
-        if department:
-            if department == "Women":
-                reasons.append("for women")
-            elif department == "Men":
-                reasons.append("for men")
-            elif isinstance(department, list) and len(department) == 2:
+        recipients = LAST_CONTEXT.get("recipients", [])
+        if recipients:
+            if recipients == ["parents"]:
                 reasons.append("for parents")
             else:
-                reasons.append(f"for {department.lower()}")
+                reasons.append("for " + " and ".join(recipients))
+        elif department == "Women":
+            reasons.append("for women")
+        elif department == "Men":
+            reasons.append("for men")
 
         if size:
             reasons.append(f"size {size.upper()}")
@@ -1190,15 +1237,16 @@ def chat(message: str):
     if category:
         reply_parts.append(category + "s")
 
-    if department:
-        if department == "Women":
-            reply_parts.append("for women")
-        elif department == "Men":
-            reply_parts.append("for men")
-        elif isinstance(department, list) and len(department) == 2:
+    recipients = LAST_CONTEXT.get("recipients", [])
+    if recipients:
+        if recipients == ["parents"]:
             reply_parts.append("for parents")
         else:
-            reply_parts.append(f"for {department.lower()}")
+            reply_parts.append("for " + " and ".join(recipients))
+    elif department == "Women":
+        reply_parts.append("for women")
+    elif department == "Men":
+        reply_parts.append("for men")
 
     if size:
         reply_parts.append(f"in size {size.upper()}")
