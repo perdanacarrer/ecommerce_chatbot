@@ -3,6 +3,7 @@ let compareList = [];
 let cart = [];
 let isCheckingOut = false;
 let userLocation = null;
+let isBotTyping = false;
 
 const messages = document.getElementById("messages");
 const quickReplies = document.getElementById("quickReplies");
@@ -50,6 +51,10 @@ function addMapMessage(stores) {
 }
 
 function showTyping() {
+  if (isBotTyping) return;
+
+  disableUserInput();
+
   const div = document.createElement("div");
   div.className = "message system typing";
   div.id = "typing";
@@ -61,6 +66,8 @@ function showTyping() {
 function hideTyping() {
   const el = document.getElementById("typing");
   if (el) el.remove();
+
+  enableUserInput();
 }
 
 function clearCarousels() {
@@ -89,6 +96,38 @@ function searchStore(storeId, storeName) {
 function showStoreDetails(storeId, storeName) {
   addMessage(`View details for ${storeName}`, "user")
   sendBackendCommand(`store details ${storeId}`)
+}
+
+function disableUserInput() {
+  isBotTyping = true;
+
+  const input = document.getElementById("messageInput");
+  const sendBtn = document.querySelector(".send-btn");
+
+  input.disabled = true;
+  sendBtn.disabled = true;
+
+  // Disable quick replies
+  document
+    .querySelectorAll("#quickReplies button")
+    .forEach(btn => btn.disabled = true);
+}
+
+function enableUserInput() {
+  isBotTyping = false;
+
+  const input = document.getElementById("messageInput");
+  const sendBtn = document.querySelector(".send-btn");
+
+  input.disabled = false;
+  sendBtn.disabled = false;
+
+  // Re-enable quick replies
+  document
+    .querySelectorAll("#quickReplies button")
+    .forEach(btn => btn.disabled = false);
+
+  input.focus();
 }
 
 /* --------------------
@@ -217,6 +256,7 @@ function renderQuickReplies(replies) {
   replies.forEach(label => {
     const btn = document.createElement("button");
     btn.innerText = label;
+    btn.disabled = isBotTyping;
     btn.onclick = () => {
         clearQuickReplies();
         (quickReplyActions[label] || send)(label);
@@ -238,6 +278,7 @@ function showQuickReplies(items) {
    SEND MESSAGE
 -------------------- */
 async function sendBackendCommand(command) {
+  if (isBotTyping) return;
   showTyping()
 
   const res = await fetch(
@@ -254,6 +295,7 @@ async function sendBackendCommand(command) {
 }
 
 async function send(textOverride) {
+  if (isBotTyping) return;
   clearQuickReplies();
   const input = document.getElementById("messageInput");
   const text = textOverride || input.value.trim();

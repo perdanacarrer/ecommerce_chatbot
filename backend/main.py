@@ -636,7 +636,9 @@ def chat(message: str):
     # 🔒 HARD FREEZE multi-recipient departments
     if isinstance(recipient_departments, list) and len(recipient_departments) > 1:
         department = recipient_departments
-    LAST_CONTEXT["department"] = recipient_departments
+        LAST_CONTEXT["department"] = recipient_departments  # 🔒 LOCK
+    else:
+        LAST_CONTEXT["department"] = recipient_departments
 
     has_recipient = bool(recipient_departments)
 
