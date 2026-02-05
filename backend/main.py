@@ -253,17 +253,20 @@ def extract_price_constraint(message: str):
     # "$4 jackets", "priced $4"
     return price, "exact"
 
-def resolve_recipient_department(message: str) -> str | None:
+def resolve_recipient_department(message: str):
     msg = message.lower()
 
-    # 1️⃣ Explicit family member ALWAYS wins
+    if "parents" in msg:
+        LAST_CONTEXT["recipient"] = "parents"
+        LAST_CONTEXT["department"] = ["Men", "Women"]
+        return ["Men", "Women"]
+
     for word, dept in RECIPIENT_MAP.items():
         if word in msg:
             LAST_CONTEXT["recipient"] = word
             LAST_CONTEXT["department"] = dept
             return dept
 
-    # 2️⃣ Pronoun → direct gender (even without context)
     for pronoun, dept in PRONOUN_MAP.items():
         if pronoun in msg:
             LAST_CONTEXT["recipient"] = pronoun
@@ -275,8 +278,8 @@ def resolve_recipient_department(message: str) -> str | None:
 def detect_gender_department(message: str):
     msg = message.lower()
 
-    women_keywords = ["girlfriend", "wife", "mother", "mom", "sister", "grandmother", "parent"]
-    men_keywords = ["boyfriend", "man", "father", "dad", "son", "grandfather", "parent", "him"]
+    women_keywords = ["girlfriend", "wife", "mother", "mom", "sister", "grandmother"]
+    men_keywords = ["boyfriend", "man", "father", "dad", "son", "grandfather", "him"]
 
     if any(k in msg for k in women_keywords):
         return "Women"
@@ -304,6 +307,12 @@ def detect_target_gender(message: str, user_gender: str | None):
     if any(k in msg for k in male_targets):
         return "Men"
 
+    return None
+
+def detect_parent_group(message: str) -> list[str] | None:
+    msg = message.lower()
+    if "parents" in msg:
+        return ["Men", "Women"]
     return None
 
 def detect_size(message: str):
@@ -594,8 +603,20 @@ def chat(message: str):
         return search_products_in_store(store_id)
 
     department = None
+    prev_department = LAST_CONTEXT.get("department")
     recipient_department = resolve_recipient_department(message)
     has_recipient = recipient_department is not None
+
+    # 👤 Pronoun should override previous "parents" context
+    if (
+        recipient_department
+        and isinstance(prev_department, list)
+        and len(prev_department) == 2
+        and len(recipient_department) == 1
+    ):
+        LAST_CONTEXT["department"] = recipient_department
+        department = recipient_department
+
     if is_relax_price_intent(message) and "filters" in LAST_SEARCH:
         filters = LAST_SEARCH["filters"]
 
@@ -848,19 +869,28 @@ def chat(message: str):
                     )
 
             # 🧍 Department
-            if filters["department"]:
+            dept = filters["department"]
+
+            if isinstance(dept, list):
+                query += " AND p.department IN UNNEST(@dept_list)"
+                params.append(
+                    bigquery.ArrayQueryParameter("dept_list", "STRING", dept)
+                )
+            elif dept:
                 query += " AND p.department = @dept"
                 params.append(
-                    bigquery.ScalarQueryParameter("dept", "STRING", filters["department"])
+                    bigquery.ScalarQueryParameter("dept", "STRING", dept)
                 )
-            # 🚫 Extra safety: exclude opposite-gender keywords in product name
-            if department == "Men":
-                query += " AND LOWER(p.name) NOT LIKE '%ladies%'"
-                query += " AND LOWER(p.name) NOT LIKE '%women%'"
 
-            elif department == "Women":
-                query += " AND LOWER(p.name) NOT LIKE '%men%'"
-                query += " AND LOWER(p.name) NOT LIKE '%male%'"
+            # 🚫 Extra safety: exclude opposite-gender keywords in product name
+            if isinstance(department, str):
+                if department == "Men":
+                    query += " AND LOWER(p.name) NOT LIKE '%ladies%'"
+                    query += " AND LOWER(p.name) NOT LIKE '%women%'"
+
+                elif department == "Women":
+                    query += " AND LOWER(p.name) NOT LIKE '%men%'"
+                    query += " AND LOWER(p.name) NOT LIKE '%male%'"
 
             query += f"""
             GROUP BY dc.id, dc.name, dc.latitude, dc.longitude
@@ -961,6 +991,11 @@ def chat(message: str):
     if not is_quick_reply:
         price, price_op = extract_price_constraint(message)
     gift_intent = is_gift_intent(message)
+    # 🎁 NEW GIFT INTENT SHOULD RESET PREVIOUS RECIPIENT CONTEXT
+    if gift_intent and recipient_department is None:
+        LAST_CONTEXT["recipient"] = None
+        LAST_CONTEXT["department"] = None
+
     size = detect_size(message)
     category = detect_category_keyword(message)
 
@@ -969,11 +1004,13 @@ def chat(message: str):
         department = recipient_department  # 🔒 HARD LOCK
     elif gift_intent:
         department = None
+    elif LAST_CONTEXT.get("department"):
+        department = LAST_CONTEXT["department"]
     elif department:
         pass  # keep existing department
 
     # 🔒 HARD ENFORCE department for normal searches
-    if not gift_intent and not department:
+    if not department and not gift_intent:
         if USER.get("gender") == "M":
             department = "Men"
         elif USER.get("gender") == "F":
@@ -1065,19 +1102,25 @@ def chat(message: str):
             ])
 
     # 👕 Department
-    if department:
+    if isinstance(department, list):
+        query += " AND p.department IN UNNEST(@dept_list)"
+        params.append(
+            bigquery.ArrayQueryParameter("dept_list", "STRING", department)
+        )
+    elif department:
         query += " AND p.department = @dept"
         params.append(
             bigquery.ScalarQueryParameter("dept", "STRING", department)
         )
     # 🚫 Extra safety: exclude opposite-gender keywords in product name
-    if department == "Men":
-        query += " AND LOWER(p.name) NOT LIKE '%ladies%'"
-        query += " AND LOWER(p.name) NOT LIKE '%women%'"
+    if isinstance(department, str):
+        if department == "Men":
+            query += " AND LOWER(p.name) NOT LIKE '%ladies%'"
+            query += " AND LOWER(p.name) NOT LIKE '%women%'"
 
-    elif department == "Women":
-        query += " AND LOWER(p.name) NOT LIKE '%men%'"
-        query += " AND LOWER(p.name) NOT LIKE '%male%'"
+        elif department == "Women":
+            query += " AND LOWER(p.name) NOT LIKE '%men%'"
+            query += " AND LOWER(p.name) NOT LIKE '%male%'"
 
     # 📏 Size (from name)
     if size:
@@ -1107,7 +1150,14 @@ def chat(message: str):
             reasons.append(category + "s")
 
         if department:
-            reasons.append(f"for {department.lower()}")
+            if department == "Women":
+                reasons.append("for women")
+            elif department == "Men":
+                reasons.append("for men")
+            elif isinstance(department, list) and len(department) == 2:
+                reasons.append("for parents")
+            else:
+                reasons.append(f"for {department.lower()}")
 
         if size:
             reasons.append(f"size {size.upper()}")
@@ -1141,7 +1191,14 @@ def chat(message: str):
         reply_parts.append(category + "s")
 
     if department:
-        reply_parts.append(f"for {department.lower()}")
+        if department == "Women":
+            reply_parts.append("for women")
+        elif department == "Men":
+            reply_parts.append("for men")
+        elif isinstance(department, list) and len(department) == 2:
+            reply_parts.append("for parents")
+        else:
+            reply_parts.append(f"for {department.lower()}")
 
     if size:
         reply_parts.append(f"in size {size.upper()}")
